@@ -1,6 +1,8 @@
 import express from "express";
+import { randomUUID } from "crypto";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ErrorCode,
@@ -578,7 +580,32 @@ app.get("/health", (_req: express.Request, res: express.Response) => {
   res.json({ status: "ok", server: "hubspot-cms-mcp" });
 });
 
-// SSE endpoint — client opens a persistent connection here
+// ── StreamableHTTP transport (POST /sse — used by Airops and modern clients) ─
+const streamableTransports = new Map<string, StreamableHTTPServerTransport>();
+
+app.post("/sse", async (req: express.Request, res: express.Response) => {
+  try {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    let transport = sessionId ? streamableTransports.get(sessionId) : undefined;
+
+    if (!transport) {
+      transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
+      const mcpServer = createMcpServer();
+      await mcpServer.connect(transport);
+      if (transport.sessionId) {
+        streamableTransports.set(transport.sessionId, transport);
+        transport.onclose = () => streamableTransports.delete(transport!.sessionId!);
+      }
+    }
+
+    await transport.handleRequest(req, res, req.body);
+  } catch (err) {
+    console.error("StreamableHTTP error:", err);
+    if (!res.headersSent) res.status(500).json({ error: String(err) });
+  }
+});
+
+// ── Legacy SSE transport (GET /sse — for older clients) ───────────────────
 const sseTransports = new Map<string, SSEServerTransport>();
 
 app.get("/sse", async (req: express.Request, res: express.Response) => {
