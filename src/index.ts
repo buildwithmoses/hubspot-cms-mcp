@@ -583,26 +583,44 @@ app.get("/health", (_req, res) => {
 const transports = new Map<string, SSEServerTransport>();
 
 app.get("/sse", async (req, res) => {
-  const transport = new SSEServerTransport("/messages", res);
-  transports.set(transport.sessionId, transport);
+  try {
+    const transport = new SSEServerTransport("/messages", res);
+    transports.set(transport.sessionId, transport);
 
-  res.on("close", () => {
-    transports.delete(transport.sessionId);
-  });
+    res.on("close", () => {
+      transports.delete(transport.sessionId);
+    });
 
-  const server = createMcpServer();
-  await server.connect(transport);
+    const server = createMcpServer();
+    await server.connect(transport);
+  } catch (err) {
+    console.error("SSE connection error:", err);
+    if (!res.headersSent) res.status(500).end();
+  }
 });
 
 // Message endpoint — client POSTs tool calls here
 app.post("/messages", async (req, res) => {
-  const sessionId = req.query.sessionId as string;
-  const transport = transports.get(sessionId);
-  if (!transport) {
-    res.status(404).json({ error: "Session not found" });
-    return;
+  try {
+    const sessionId = req.query.sessionId as string;
+    const transport = transports.get(sessionId);
+    if (!transport) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    await transport.handlePostMessage(req, res);
+  } catch (err) {
+    console.error("Message handler error:", err);
+    if (!res.headersSent) res.status(500).end();
   }
-  await transport.handlePostMessage(req, res);
+});
+
+// Prevent unhandled rejections from crashing the process
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled rejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception:", err);
 });
 
 app.listen(PORT, () => {
