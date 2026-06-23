@@ -562,65 +562,54 @@ function createMcpServer(): Server {
 // ─── Express HTTP server ──────────────────────────────────────────────────────
 
 const app = express();
+app.use(express.json());
 
 // Auth middleware (only if MCP_API_KEY is set)
-app.use((req, res, next) => {
-  if (!MCP_API_KEY) return next();
-  if (req.path === "/health") return next();
+app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (!MCP_API_KEY || req.path === "/health") { next(); return; }
   const auth = req.headers.authorization ?? "";
   const key = req.query.api_key as string | undefined;
-  if (auth === `Bearer ${MCP_API_KEY}` || key === MCP_API_KEY) return next();
+  if (auth === `Bearer ${MCP_API_KEY}` || key === MCP_API_KEY) { next(); return; }
   res.status(401).json({ error: "Unauthorized" });
 });
 
 // Health check
-app.get("/health", (_req, res) => {
+app.get("/health", (_req: express.Request, res: express.Response) => {
   res.json({ status: "ok", server: "hubspot-cms-mcp" });
 });
 
-// SSE endpoint — client connects here to receive events
-const transports = new Map<string, SSEServerTransport>();
+// SSE endpoint — client opens a persistent connection here
+const sseTransports = new Map<string, SSEServerTransport>();
 
-app.get("/sse", async (req, res) => {
+app.get("/sse", async (req: express.Request, res: express.Response) => {
   try {
     const transport = new SSEServerTransport("/messages", res);
-    transports.set(transport.sessionId, transport);
-
-    res.on("close", () => {
-      transports.delete(transport.sessionId);
-    });
-
-    const server = createMcpServer();
-    await server.connect(transport);
+    sseTransports.set(transport.sessionId, transport);
+    res.on("close", () => sseTransports.delete(transport.sessionId));
+    const mcpServer = createMcpServer();
+    await mcpServer.connect(transport);
   } catch (err) {
-    console.error("SSE connection error:", err);
+    console.error("SSE error:", err);
     if (!res.headersSent) res.status(500).end();
   }
 });
 
-// Message endpoint — client POSTs tool calls here
-app.post("/messages", async (req, res) => {
+// Message endpoint — client POSTs tool calls here, passing req.body so the
+// SDK does not need to re-read the already-consumed request stream.
+app.post("/messages", async (req: express.Request, res: express.Response) => {
   try {
     const sessionId = req.query.sessionId as string;
-    const transport = transports.get(sessionId);
-    if (!transport) {
-      res.status(404).json({ error: "Session not found" });
-      return;
-    }
-    await transport.handlePostMessage(req, res);
+    const transport = sseTransports.get(sessionId);
+    if (!transport) { res.status(404).json({ error: "Session not found" }); return; }
+    await transport.handlePostMessage(req, res, req.body);
   } catch (err) {
-    console.error("Message handler error:", err);
+    console.error("SSE message error:", err);
     if (!res.headersSent) res.status(500).end();
   }
 });
 
-// Prevent unhandled rejections from crashing the process
-process.on("unhandledRejection", (reason) => {
-  console.error("Unhandled rejection:", reason);
-});
-process.on("uncaughtException", (err) => {
-  console.error("Uncaught exception:", err);
-});
+process.on("unhandledRejection", (reason) => console.error("Unhandled rejection:", reason));
+process.on("uncaughtException", (err) => console.error("Uncaught exception:", err));
 
 app.listen(PORT, () => {
   console.log(`HubSpot CMS MCP server listening on port ${PORT}`);
