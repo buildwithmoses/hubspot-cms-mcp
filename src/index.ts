@@ -562,7 +562,6 @@ function createMcpServer(): Server {
 // ─── Express HTTP server ──────────────────────────────────────────────────────
 
 const app = express();
-app.use(express.json());
 
 // Auth middleware (only if MCP_API_KEY is set)
 app.use((req, res, next) => {
